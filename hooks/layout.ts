@@ -46,7 +46,7 @@ export function tree(items: Item[], withMentioned: boolean): Section[] {
     return { title, rows }
   }
 
-  return [section('created'), section('focus', 'focus'), section('mentioned', 'mentioned')].filter(
+  return [section('created', 'opened here'), section('focus', 'focus'), section('mentioned', 'mentioned')].filter(
     one => one.rows.length > 0,
   )
 }
