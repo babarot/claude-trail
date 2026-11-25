@@ -10,6 +10,9 @@ const TITLE = 'Trail'
 const layout = atom({ plugin: 'trail', key: 'layout' } as const, 'grouped' as Layout, {
   shape: 'layout-1',
 })
+const showMentioned = atom({ plugin: 'trail', key: 'showMentioned' } as const, false, {
+  shape: 'show-mentioned-1',
+})
 
 const STATE: Record<Item['state'], { glyph: string; color: Color }> = {
   open: { glyph: '●', color: 'success' },
@@ -95,72 +98,92 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Link, Button } = $.ui.resolve(e)
     const mode = await read($, layout)
+    const withMentioned = await read($, showMentioned)
     const items = await loadFixtures($)
 
-    const row = (item: Item, depth: number, showRepo: boolean) => {
+    const isActive = (item: Item) => item.state === 'open' || item.state === 'draft'
+    // Open and draft first, then newest first.
+    const sorted = [...items].sort(
+      (a, b) => Number(isActive(b)) - Number(isActive(a)) || b.number - a.number,
+    )
+    const created = sorted.filter(item => item.isCreated)
+    const mentioned = sorted.filter(item => !item.isCreated)
+    const shown = withMentioned ? sorted : created
+
+    const row = (item: Item, depth: number, showRepo: boolean, refWidth: number) => {
       const state = STATE[item.state]
-      const ref = `${showRepo ? item.repo : ''}#${item.number}`
-      const isPr = item.kind === 'pr'
+      const ref = `${item.kind === 'pr' ? 'PR ' : ''}${showRepo ? item.repo : ''}#${item.number}`
+      const isDone = !isActive(item)
+      const checks = CHECKS[item.checks ?? 'none']
+      const mergeable = MERGEABLE[item.mergeable ?? 'unknown']
+      const review = REVIEW[item.review ?? 'none']
       return (
-        <Box key={item.url} flexDirection="row" paddingLeft={depth * 2} columnGap={1}>
-          <Text color={state.color}>{depth > 0 ? '└' : ''}{state.glyph}</Text>
-          <Box flexShrink={0}>
-            <Text>
-              <Link href={item.url}>{isPr ? `PR ${ref}` : ref}</Link>
+        <Box key={item.url} flexDirection="row" paddingLeft={depth * 2}>
+          <Box flexShrink={0} width={2}>
+            <Text color={state.color}>{state.glyph}</Text>
+          </Box>
+          <Box flexShrink={0} width={refWidth + 1}>
+            <Text dimColor={isDone}>
+              <Link href={item.url}>{ref}</Link>
             </Text>
           </Box>
           <Box flexGrow={1} flexShrink={1} minWidth={8}>
-            <Text wrap="truncate-end" dimColor={item.state === 'closed' || item.state === 'merged'}>
+            <Text wrap="truncate-end" dimColor={isDone || !item.isCreated}>
               {item.title}
             </Text>
           </Box>
-          {isPr && (
-            <Box flexShrink={0} columnGap={1}>
-              <Text color={CHECKS[item.checks ?? 'none'].color}>{CHECKS[item.checks ?? 'none'].text}</Text>
-              {item.state === 'open' && MERGEABLE[item.mergeable ?? 'unknown'].text !== '' && (
-                <Text color={MERGEABLE[item.mergeable ?? 'unknown'].color}>
-                  {MERGEABLE[item.mergeable ?? 'unknown'].text}
-                </Text>
-              )}
-              {item.state === 'open' && REVIEW[item.review ?? 'none'].text !== '' && (
-                <Text color={REVIEW[item.review ?? 'none'].color}>{REVIEW[item.review ?? 'none'].text}</Text>
-              )}
+          {item.kind === 'pr' && !isDone && (
+            <Box flexShrink={0} columnGap={1} marginLeft={1}>
+              <Text color={checks.color}>{checks.text}</Text>
+              {mergeable.text !== '' && <Text color={mergeable.color}>{mergeable.text}</Text>}
+              {review.text !== '' && <Text color={review.color}>{review.text}</Text>}
             </Box>
           )}
-          <Box flexShrink={0} width={1}>
-            <Text color="claude">{item.isCreated ? '+' : ' '}</Text>
-          </Box>
         </Box>
       )
     }
+    const refOf = (item: Item, showRepo: boolean) =>
+      (item.kind === 'pr' ? 3 : 0) + (showRepo ? item.repo.length : 0) + 1 + String(item.number).length
+    const widest = (list: Item[], showRepo: boolean) =>
+      Math.max(0, ...list.map(item => refOf(item, showRepo)))
 
-    const prs = items.filter(item => item.kind === 'pr').length
     const header = (
       <Box flexDirection="row" justifyContent="space-between">
         <Text dimColor>
-          {prs} PRs · {items.length - prs} issues · {items.filter(i => i.isCreated).length} opened here
+          {created.length} opened here ({created.filter(isActive).length} open)
+          {mentioned.length > 0 ? ` · ${mentioned.length} mentioned` : ''}
         </Text>
-        <Button
-          plain
-          dimColor
-          onPress={() => update($, layout, now => (now === 'grouped' ? 'flat' : 'grouped'))}
-        >
-          {mode === 'grouped' ? 'flat' : 'grouped'}
-        </Button>
+        <Box columnGap={2}>
+          {mentioned.length > 0 && (
+            <Button plain dimColor onPress={() => update($, showMentioned, now => !now)}>
+              {withMentioned ? 'hide mentioned' : 'show mentioned'}
+            </Button>
+          )}
+          <Button
+            plain
+            dimColor
+            onPress={() => update($, layout, now => (now === 'grouped' ? 'flat' : 'grouped'))}
+          >
+            {mode === 'grouped' ? 'flat' : 'grouped'}
+          </Button>
+        </Box>
       </Box>
     )
 
     const body =
       mode === 'grouped' ? (
-        group(items).map(g => (
-          <Box key={g.repo} flexDirection="column" marginTop={1}>
-            <Text bold>{g.repo}</Text>
-            {g.rows.map(r => row(r.item, r.depth, false))}
-          </Box>
-        ))
+        group(shown).map(g => {
+          const width = widest(g.rows.map(r => r.item), false)
+          return (
+            <Box key={g.repo} flexDirection="column" marginTop={1}>
+              <Text bold>{g.repo}</Text>
+              {g.rows.map(r => row(r.item, r.depth, false, width))}
+            </Box>
+          )
+        })
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {items.map(item => row(item, 0, true))}
+          {shown.map(item => row(item, 0, true, widest(shown, true)))}
         </Box>
       )
 
@@ -169,7 +192,7 @@ export const register: Register = on => {
         {header}
         {body}
         <Box marginTop={1}>
-          <Text dimColor>● open ◌ draft ◆ merged ✕ closed  + opened in this session</Text>
+          <Text dimColor>● open ◌ draft ◆ merged ✕ closed  · dim: mentioned, not opened here</Text>
         </Box>
       </Box>
     )

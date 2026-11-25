@@ -27,6 +27,7 @@ declare module 'claude-code' {
   interface PluginState {
     trail: {
       layout: Shaped<Layout>
+      showMentioned: Shaped<boolean>
     }
   }
 }
