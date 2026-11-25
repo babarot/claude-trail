@@ -119,14 +119,19 @@ export const register: Register = on => {
       )
     }
 
-    // Rows at one depth of one block share a width for the reference, so
-    // their titles line up.
-    const block = (rows: Row[], fullRepo: boolean) => {
-      const width = (depth: number) =>
-        Math.max(0, ...rows.filter(r => r.depth === depth).map(r => refOf(r.item, fullRepo).length))
-      const widths = [width(0), width(1)]
-      return rows.map(r => row(r.item, r.depth, fullRepo, widths[r.depth] ?? 0))
-    }
+    // Every title starts in one column: the widest reference, indent
+    // included, across all the rows drawn.
+    const columnOf = (rows: Row[], fullRepo: boolean) =>
+      Math.max(0, ...rows.map(r => r.depth * 2 + refOf(r.item, fullRepo).length))
+    const block = (rows: Row[], fullRepo: boolean, column: number) =>
+      rows.map(r => row(r.item, r.depth, fullRepo, column - r.depth * 2))
+
+    const sections = tree(items, withMentioned)
+    const groupedColumn = columnOf(sections.flatMap(section => section.rows), false)
+    const flatRows: Row[] = items
+      .filter(item => withMentioned || item.role !== 'mentioned')
+      .sort(byActivity)
+      .map(item => ({ item, depth: 0 }))
 
     const toggle = () => update($, showMentioned, now => !now)
     const header = (
@@ -147,25 +152,19 @@ export const register: Register = on => {
 
     const body =
       mode === 'grouped' ? (
-        tree(items, withMentioned).map(section => (
+        sections.map(section => (
           <Box key={section.title ?? 'created'} flexDirection="column" marginTop={1}>
             {section.title && (
               <Text bold dimColor>
                 {section.title}
               </Text>
             )}
-            {block(section.rows, false)}
+            {block(section.rows, false, groupedColumn)}
           </Box>
         ))
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {block(
-            items
-              .filter(item => withMentioned || item.role !== 'mentioned')
-              .sort(byActivity)
-              .map(item => ({ item, depth: 0 })),
-            true,
-          )}
+          {block(flatRows, true, columnOf(flatRows, true))}
         </Box>
       )
 
