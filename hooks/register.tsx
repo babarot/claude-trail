@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Color, Register } from 'claude-code'
+import type { Color, EngineInterface, Register } from 'claude-code'
 
 import type { Item, Layout } from '../types'
 import { fixtures } from './fixtures'
@@ -63,6 +63,19 @@ function group(items: Item[]): Group[] {
   })
 }
 
+// A local file of real items, kept out of git, stands in for the made-up
+// ones while the layout is worked out. Read once per load of the module.
+let loaded: Item[] | undefined
+async function loadFixtures($: EngineInterface): Promise<Item[]> {
+  if (loaded) return loaded
+  try {
+    loaded = JSON.parse(await $.fs.read(`${$.plugin.root}/fixtures.local.json`)) as Item[]
+  } catch {
+    loaded = fixtures
+  }
+  return loaded
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -82,7 +95,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Link, Button } = $.ui.resolve(e)
     const mode = await read($, layout)
-    const items = fixtures
+    const items = await loadFixtures($)
 
     const row = (item: Item, depth: number, showRepo: boolean) => {
       const state = STATE[item.state]
