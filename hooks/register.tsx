@@ -3,6 +3,8 @@ import type { Color, EngineInterface, Register } from 'claude-code'
 
 import type { Item, Layout } from '../types'
 import { fixtures } from './fixtures'
+import { byActivity, isActive, tree } from './layout'
+import type { Row } from './layout'
 
 const PANE = 'trail'
 const TITLE = 'Trail'
@@ -42,30 +44,6 @@ const REVIEW = {
   none: { text: '', color: 'inactive' },
 } satisfies Record<NonNullable<Item['review']>, { text: string; color: Color }>
 
-// A repository's items: each issue followed by the pull requests that close
-// it, then the pull requests that close none of the listed issues.
-type Group = { repo: string; rows: { item: Item; depth: number }[] }
-
-function group(items: Item[]): Group[] {
-  const repos = [...new Set(items.map(item => item.repo))]
-  return repos.map(repo => {
-    const mine = items.filter(item => item.repo === repo)
-    const issues = mine.filter(item => item.kind === 'issue')
-    const listed = new Set(issues.map(issue => issue.number))
-    const rows: Group['rows'] = []
-    for (const issue of issues) {
-      rows.push({ item: issue, depth: 0 })
-      for (const pr of mine) {
-        if (pr.kind === 'pr' && pr.closes?.includes(issue.number)) rows.push({ item: pr, depth: 1 })
-      }
-    }
-    for (const pr of mine) {
-      if (pr.kind === 'pr' && !pr.closes?.some(n => listed.has(n))) rows.push({ item: pr, depth: 0 })
-    }
-    return { repo, rows }
-  })
-}
-
 // A local file of real items, kept out of git, stands in for the made-up
 // ones while the layout is worked out. Read once per load of the module.
 let loaded: Item[] | undefined
@@ -101,19 +79,17 @@ export const register: Register = on => {
     const withMentioned = await read($, showMentioned)
     const items = await loadFixtures($)
 
-    const isActive = (item: Item) => item.state === 'open' || item.state === 'draft'
-    // Open and draft first, then newest first.
-    const sorted = [...items].sort(
-      (a, b) => Number(isActive(b)) - Number(isActive(a)) || b.number - a.number,
-    )
-    const created = sorted.filter(item => item.isCreated)
-    const mentioned = sorted.filter(item => !item.isCreated)
-    const shown = withMentioned ? sorted : created
+    const created = items.filter(item => item.role === 'created')
+    const focus = items.filter(item => item.role === 'focus')
+    const hidden = withMentioned ? 0 : items.filter(item => item.role === 'mentioned').length
 
-    const row = (item: Item, depth: number, showRepo: boolean, refWidth: number) => {
+    const refOf = (item: Item, fullRepo: boolean) =>
+      `${item.kind === 'pr' ? 'PR ' : ''}${fullRepo ? item.repo : item.repo.split('/')[1]}#${item.number}`
+
+    const row = (item: Item, depth: number, fullRepo: boolean, refWidth: number) => {
       const state = STATE[item.state]
-      const ref = `${item.kind === 'pr' ? 'PR ' : ''}${showRepo ? item.repo : ''}#${item.number}`
       const isDone = !isActive(item)
+      const isOwn = item.role === 'created'
       const checks = CHECKS[item.checks ?? 'none']
       const mergeable = MERGEABLE[item.mergeable ?? 'unknown']
       const review = REVIEW[item.review ?? 'none']
@@ -123,12 +99,12 @@ export const register: Register = on => {
             <Text color={state.color}>{state.glyph}</Text>
           </Box>
           <Box flexShrink={0} width={refWidth + 1}>
-            <Text dimColor={isDone}>
-              <Link href={item.url}>{ref}</Link>
+            <Text dimColor={isDone || !isOwn}>
+              <Link href={item.url}>{refOf(item, fullRepo)}</Link>
             </Text>
           </Box>
           <Box flexGrow={1} flexShrink={1} minWidth={8}>
-            <Text wrap="truncate-end" dimColor={isDone || !item.isCreated}>
+            <Text wrap="truncate-end" dimColor={isDone || !isOwn}>
               {item.title}
             </Text>
           </Box>
@@ -142,57 +118,74 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const refOf = (item: Item, showRepo: boolean) =>
-      (item.kind === 'pr' ? 3 : 0) + (showRepo ? item.repo.length : 0) + 1 + String(item.number).length
-    const widest = (list: Item[], showRepo: boolean) =>
-      Math.max(0, ...list.map(item => refOf(item, showRepo)))
 
+    // Rows at one depth of one block share a width for the reference, so
+    // their titles line up.
+    const block = (rows: Row[], fullRepo: boolean) => {
+      const width = (depth: number) =>
+        Math.max(0, ...rows.filter(r => r.depth === depth).map(r => refOf(r.item, fullRepo).length))
+      const widths = [width(0), width(1)]
+      return rows.map(r => row(r.item, r.depth, fullRepo, widths[r.depth] ?? 0))
+    }
+
+    const toggle = () => update($, showMentioned, now => !now)
     const header = (
       <Box flexDirection="row" justifyContent="space-between">
         <Text dimColor>
-          {created.length} opened here ({created.filter(isActive).length} open)
-          {mentioned.length > 0 ? ` · ${mentioned.length} mentioned` : ''}
+          {created.length} opened here ({created.filter(isActive).length} open) · {focus.length} focus
+          {hidden > 0 ? ` · ${hidden} hidden` : ''}
         </Text>
-        <Box columnGap={2}>
-          {mentioned.length > 0 && (
-            <Button plain dimColor onPress={() => update($, showMentioned, now => !now)}>
-              {withMentioned ? 'hide mentioned' : 'show mentioned'}
-            </Button>
-          )}
-          <Button
-            plain
-            dimColor
-            onPress={() => update($, layout, now => (now === 'grouped' ? 'flat' : 'grouped'))}
-          >
-            {mode === 'grouped' ? 'flat' : 'grouped'}
-          </Button>
-        </Box>
+        <Button
+          plain
+          dimColor
+          onPress={() => update($, layout, now => (now === 'grouped' ? 'flat' : 'grouped'))}
+        >
+          {mode === 'grouped' ? 'flat' : 'grouped'}
+        </Button>
       </Box>
     )
 
     const body =
       mode === 'grouped' ? (
-        group(shown).map(g => {
-          const width = widest(g.rows.map(r => r.item), false)
-          return (
-            <Box key={g.repo} flexDirection="column" marginTop={1}>
-              <Text bold>{g.repo}</Text>
-              {g.rows.map(r => row(r.item, r.depth, false, width))}
-            </Box>
-          )
-        })
+        tree(items, withMentioned).map(section => (
+          <Box key={section.title ?? 'created'} flexDirection="column" marginTop={1}>
+            {section.title && (
+              <Text bold dimColor>
+                {section.title}
+              </Text>
+            )}
+            {block(section.rows, false)}
+          </Box>
+        ))
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {shown.map(item => row(item, 0, true, widest(shown, true)))}
+          {block(
+            items
+              .filter(item => withMentioned || item.role !== 'mentioned')
+              .sort(byActivity)
+              .map(item => ({ item, depth: 0 })),
+            true,
+          )}
         </Box>
       )
 
+    const mentioned = items.length - created.length - focus.length
     return (
       <Box flexDirection="column">
         {header}
         {body}
+        {mentioned > 0 && (
+          <Box marginTop={1} columnGap={1}>
+            <Text dimColor>
+              {withMentioned ? `${mentioned} mentioned shown` : `${mentioned} mentioned hidden`}
+            </Text>
+            <Button plain onPress={toggle}>
+              {withMentioned ? 'hide' : 'show'}
+            </Button>
+          </Box>
+        )}
         <Box marginTop={1}>
-          <Text dimColor>● open ◌ draft ◆ merged ✕ closed  · dim: mentioned, not opened here</Text>
+          <Text dimColor>● open ◌ draft ◆ merged ✕ closed · dim: not opened here</Text>
         </Box>
       </Box>
     )
