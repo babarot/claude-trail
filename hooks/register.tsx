@@ -1,8 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Color, EngineInterface, Register } from 'claude-code'
 
-import type { Item, Layout } from '../types'
-import { fixtures } from './fixtures'
+import type { Item, Layout, Sync } from '../types'
+import { collect, emptySeen, withRoles } from './collect'
+import { fetchItems } from './github'
+import type { Fetched } from './github'
 import { byActivity, isActive, tree } from './layout'
 import type { Row } from './layout'
 
@@ -11,6 +13,10 @@ const TITLE = 'Trail'
 
 const layout = atom({ plugin: 'trail', key: 'layout' } as const, 'grouped' as Layout, {
   shape: 'layout-1',
+})
+const items$ = atom({ plugin: 'trail', key: 'items' } as const, [] as Item[], { shape: 'items-1' })
+const sync$ = atom({ plugin: 'trail', key: 'sync' } as const, { at: 0, isBusy: false } as Sync, {
+  shape: 'sync-1',
 })
 const showMentioned = atom({ plugin: 'trail', key: 'showMentioned' } as const, false, {
   shape: 'show-mentioned-1',
@@ -44,25 +50,78 @@ const REVIEW = {
   none: { text: '', color: 'inactive' },
 } satisfies Record<NonNullable<Item['review']>, { text: string; color: Color }>
 
-// A local file of real items, kept out of git, stands in for the made-up
-// ones while the layout is worked out. Read once per load of the module.
-let loaded: Item[] | undefined
-async function loadFixtures($: EngineInterface): Promise<Item[]> {
-  if (loaded) return loaded
-  try {
-    loaded = JSON.parse(await $.fs.read(`${$.plugin.root}/fixtures.local.json`)) as Item[]
-  } catch {
-    loaded = fixtures
+// GitHub is asked again about the open items this often, and at the end of
+// a turn when the last look is older than TURN_STALE_MS.
+const REFRESH_MS = 3 * 60_000
+const TURN_STALE_MS = 60_000
+
+// The module's own memory of the transcript and of GitHub's answers. A
+// reload starts it over: the transcript is read again and the answers are
+// seeded from the items the pane last drew.
+let seen = emptySeen()
+let cursor: string | undefined
+const fetched = new Map<string, Fetched>()
+let lastActive = 0
+let queue: Promise<void> = Promise.resolve()
+
+async function scan($: EngineInterface) {
+  const rows = await $.session.messages(cursor === undefined ? { last: 4096 } : { after: cursor })
+  if ('deny' in rows) {
+    // The row read from is gone (a compaction, a rewind): read it all again.
+    seen = emptySeen()
+    cursor = undefined
+    const all = await $.session.messages({ last: 4096 })
+    if ('deny' in all) return
+    collect(seen, all)
+    cursor = all.at(-1)?.uuid
+    return
   }
-  return loaded
+  collect(seen, rows)
+  cursor = rows.at(-1)?.uuid ?? cursor
+}
+
+// Reads what the transcript added, asks GitHub about what is new to it (and
+// about the open items when `refresh` says so), and redraws.
+function sync($: EngineInterface, refresh: 'new' | 'stale' | 'all') {
+  queue = queue.then(async () => {
+    await scan($)
+    const now = await $.clock.now()
+    const isActiveDue = refresh === 'all' || (refresh === 'stale' && now - lastActive > TURN_STALE_MS)
+    const want = seen.order.filter(key => {
+      const known = fetched.get(key)
+      return known === undefined || (isActiveDue && isActive({ ...known, role: 'mentioned' }))
+    })
+    if (want.length > 0) {
+      await update($, sync$, now => ({ ...now, isBusy: true }))
+      const got = await fetchItems($, want)
+      for (const [key, item] of got.items) fetched.set(key, item)
+      if (isActiveDue) lastActive = now
+      await update($, sync$, () => ({ at: Date.now(), isBusy: false, error: got.error }))
+    }
+    await update($, items$, () => withRoles(seen, fetched))
+  }).catch(async (cause: unknown) => {
+    await update($, sync$, now => ({ ...now, isBusy: false, error: String(cause) }))
+  })
+  return queue
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'trail',
-      description: 'Show the GitHub issues and pull requests of this session (args: grouped | flat)',
+      description: 'Show the GitHub issues and pull requests of this session (args: refresh | grouped | flat)',
     })
+    for (const item of await read($, items$)) {
+      const { role: _, ...rest } = item
+      fetched.set(item.key, rest)
+    }
+    $.clock.every(REFRESH_MS, () => void sync($, 'all'))
+    void sync($, 'all')
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) void sync($, 'stale')
     return next(e)
   })
 
@@ -70,6 +129,10 @@ export const register: Register = on => {
     const arg = e.args.trim()
     if (arg === 'grouped' || arg === 'flat') await update($, layout, () => arg)
     await $.ui.open({ id: PANE, title: TITLE })
+    if (arg === 'refresh') {
+      await sync($, 'all')
+      return { text: 'Trail refreshed.' }
+    }
     return { text: 'Trail pane opened.' }
   })
 
@@ -77,7 +140,8 @@ export const register: Register = on => {
     const { Box, Text, Link, Button } = $.ui.resolve(e)
     const mode = await read($, layout)
     const withMentioned = await read($, showMentioned)
-    const items = await loadFixtures($)
+    const items = await read($, items$)
+    const state = await read($, sync$)
 
     const created = items.filter(item => item.role === 'created')
     const focus = items.filter(item => item.role === 'focus')
@@ -134,19 +198,37 @@ export const register: Register = on => {
       .map(item => ({ item, depth: 0 }))
 
     const toggle = () => update($, showMentioned, now => !now)
+    const clock = (at: number) => {
+      const d = new Date(at)
+      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    }
+    const synced = state.isBusy ? 'syncing…' : state.at > 0 ? `synced ${clock(state.at)}` : ''
     const header = (
-      <Box flexDirection="row" justifyContent="space-between">
-        <Text dimColor>
-          {created.length} opened here ({created.filter(isActive).length} open) · {focus.length} focus
-          {hidden > 0 ? ` · ${hidden} hidden` : ''}
-        </Text>
-        <Button
-          plain
-          dimColor
-          onPress={() => update($, layout, now => (now === 'grouped' ? 'flat' : 'grouped'))}
-        >
-          {mode === 'grouped' ? 'flat' : 'grouped'}
-        </Button>
+      <Box flexDirection="column">
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text dimColor>
+            {created.length} opened here ({created.filter(isActive).length} open) · {focus.length} focus
+            {hidden > 0 ? ` · ${hidden} hidden` : ''}
+          </Text>
+          <Box columnGap={2}>
+            <Text dimColor>{synced}</Text>
+            <Button plain dimColor onPress={() => sync($, 'all')}>
+              refresh
+            </Button>
+            <Button
+              plain
+              dimColor
+              onPress={() => update($, layout, now => (now === 'grouped' ? 'flat' : 'grouped'))}
+            >
+              {mode === 'grouped' ? 'flat' : 'grouped'}
+            </Button>
+          </Box>
+        </Box>
+        {state.error !== undefined && (
+          <Text color="error" wrap="truncate-end">
+            gh: {state.error}
+          </Text>
+        )}
       </Box>
     )
 
@@ -172,7 +254,15 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {header}
-        {body}
+        {items.length === 0 ? (
+          <Box marginTop={1}>
+            <Text dimColor>
+              {state.isBusy ? 'Looking the session up on GitHub…' : 'No GitHub issues or pull requests in this session yet.'}
+            </Text>
+          </Box>
+        ) : (
+          body
+        )}
         {mentioned > 0 && (
           <Box marginTop={1} columnGap={1}>
             <Text dimColor>

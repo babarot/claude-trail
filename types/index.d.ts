@@ -1,11 +1,13 @@
 export type ItemState = 'open' | 'draft' | 'merged' | 'closed'
 export type Checks = 'pass' | 'fail' | 'pending' | 'none'
 export type Mergeable = 'clean' | 'conflict' | 'blocked' | 'unknown'
-export type Role = 'created' | 'focus' | 'mentioned'
 export type Review = 'approved' | 'changes' | 'required' | 'none'
+export type Role = 'created' | 'focus' | 'mentioned'
 
 // One issue or pull request the session touched.
 export type Item = {
+  // `owner/repo#123`: what the session's URLs and a body's references meet on.
+  key: string
   kind: 'issue' | 'pr'
   repo: string
   number: number
@@ -20,15 +22,26 @@ export type Item = {
   checks?: Checks
   mergeable?: Mergeable
   review?: Review
-  // The URLs of the listed items a pull request's body refers to, in order.
+  // The keys a pull request's body refers to, in order, listed or not.
   refs?: string[]
 }
 
 export type Layout = 'grouped' | 'flat'
 
+// Where the last look at GitHub stands.
+export type Sync = {
+  // When it last finished, in epoch milliseconds; 0 before the first.
+  at: number
+  isBusy: boolean
+  // Why the last one failed, as gh said it.
+  error?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     trail: {
+      items: Shaped<Item[]>
+      sync: Shaped<Sync>
       layout: Shaped<Layout>
       showMentioned: Shaped<boolean>
     }

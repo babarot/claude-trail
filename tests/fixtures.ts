@@ -1,11 +1,10 @@
 import type { Item } from '../types'
 
-// Made-up items covering the states the pane has to show, used while the
-// layout is worked out. Replaced by what the session collects later.
+// Made-up items covering the states the pane has to show.
 const gh = (repo: string, kind: 'issues' | 'pull', number: number) =>
   `https://github.com/${repo}/${kind}/${number}`
 
-export const fixtures: Item[] = [
+const raw: Omit<Item, 'key'>[] = [
   {
     kind: 'issue', repo: 'babarot/api', number: 120, state: 'open', role: 'focus',
     title: 'Login times out behind the corporate proxy', url: gh('babarot/api', 'issues', 120),
@@ -13,13 +12,13 @@ export const fixtures: Item[] = [
   {
     kind: 'pr', repo: 'babarot/api', number: 131, state: 'open', role: 'created',
     title: 'Raise the login timeout and retry once', url: gh('babarot/api', 'pull', 131),
-    checks: 'pass', mergeable: 'clean', review: 'approved', refs: [gh('babarot/api', 'issues', 120)],
+    checks: 'pass', mergeable: 'clean', review: 'approved', refs: ['babarot/api#120'],
   },
   {
     kind: 'pr', repo: 'babarot/api', number: 132, state: 'open', role: 'created',
     title: 'Read the proxy settings from the environment as well as the config file so that people behind a proxy do not have to set it twice',
     url: gh('babarot/api', 'pull', 132),
-    checks: 'fail', mergeable: 'conflict', review: 'required', refs: [gh('babarot/api', 'issues', 120)],
+    checks: 'fail', mergeable: 'conflict', review: 'required', refs: ['babarot/api#120'],
   },
   {
     kind: 'issue', repo: 'babarot/api', number: 118, state: 'closed', role: 'created',
@@ -28,7 +27,7 @@ export const fixtures: Item[] = [
   {
     kind: 'pr', repo: 'babarot/api', number: 125, state: 'merged', role: 'created',
     title: 'Document the proxy settings', url: gh('babarot/api', 'pull', 125),
-    checks: 'pass', mergeable: 'unknown', review: 'approved', refs: [gh('babarot/api', 'issues', 118)],
+    checks: 'pass', mergeable: 'unknown', review: 'approved', refs: ['babarot/api#118'],
   },
   {
     kind: 'pr', repo: 'babarot/dotfiles', number: 410, state: 'draft', role: 'created',
@@ -45,3 +44,5 @@ export const fixtures: Item[] = [
     title: 'Restore keeps the original permissions', url: gh('babarot/gomi', 'issues', 77),
   },
 ]
+
+export const fixtures: Item[] = raw.map(item => ({ ...item, key: `${item.repo}#${item.number}` }))
