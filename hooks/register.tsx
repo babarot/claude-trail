@@ -162,8 +162,10 @@ export const register: Register = on => {
           <Box flexShrink={0} width={2}>
             <Text color={state.color}>{state.glyph}</Text>
           </Box>
-          <Box flexShrink={0} width={refWidth + 1}>
-            <Text dimColor={isDone || !isOwn}>
+          {/* A terminal Claude Code finds no hyperlinks in draws the URL after
+              the text; cut there, so the columns hold either way. */}
+          <Box flexShrink={0} width={refWidth + 1} overflow="hidden">
+            <Text wrap="truncate-end" dimColor={isDone || !isOwn}>
               <Link href={item.url}>{refOf(item, fullRepo)}</Link>
             </Text>
           </Box>
