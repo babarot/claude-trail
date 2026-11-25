@@ -1,0 +1,10 @@
+{
+  "name": "trail",
+  "version": "0.1.0",
+  "description": "List the GitHub issues and pull requests a session touched, with their state and CI",
+  "author": { "name": "babarot", "url": "https://github.com/babarot" },
+  "homepage": "https://github.com/babarot/claude-trail",
+  "repository": "https://github.com/babarot/claude-trail",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
