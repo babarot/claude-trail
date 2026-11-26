@@ -1,0 +1,13 @@
+{
+  "name": "claude-trail",
+  "owner": { "name": "babarot", "url": "https://github.com/babarot" },
+  "description": "The GitHub issues and pull requests of a Claude Code session, with their state and CI",
+  "plugins": [
+    {
+      "name": "trail",
+      "source": "./",
+      "description": "List the GitHub issues and pull requests a session touched, with their state and CI",
+      "category": "productivity"
+    }
+  ]
+}

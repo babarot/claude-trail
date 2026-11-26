@@ -1,0 +1,10 @@
+# A PR that changes nothing users get (the mod's code, contract or manifest)
+# stays out of the changelog.
+changelog/skip:
+  - all:
+    - changed-files:
+      - all-globs-to-all-files:
+        - '!hooks/**'
+        - '!.claude-plugin/**'
+        - '!types/**'
+        - '!CHANGELOG.md'
